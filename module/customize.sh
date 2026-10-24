@@ -12,44 +12,70 @@ banner "$MODPATH"
 
 ui_print "[%] customize.sh "
 
-detect_key_press() {
-	timeout_seconds=6
-	timeout 0.5 getevent -c 0 >/dev/null 2>&1
-	read -r -t $timeout_seconds line < <(getevent -ql | awk '/KEY_VOLUME/ {print; exit}')
-	if [ $? -eq 142 ]; then
-		ui_print "[!] No key pressed within $timeout_seconds seconds. Skipping installation..."
-		return 1
-	fi
-	if echo "$line" | grep -q "KEY_VOLUMEUP"; then
-		return 0
-	else
-		ui_print "[+] Skipping reset..."
-		return 1
-	fi
+# cli branch: the upstream installer decides how an update treats your configs
+# through volume-key prompts, which can't run unattended (adb / fleet installs).
+# This branch replaces those prompts with a plain config file:
+#
+#   /data/adb/ReSuSFS/cli.conf
+#
+#   update_configs     true|false (default false)
+#                      Apply the module's default configs on update — what the
+#                      upstream "Do you want to update the configs?" prompt
+#                      controls. Setting it true is the confirmation for
+#                      replacing your config files; back up /data/adb/ReSuSFS
+#                      first (upstream asks for a backup confirmation; this
+#                      branch treats the explicit true in the file as that
+#                      confirmation).
+#   overwrite_changed  true|false (default true, used when update_configs=true)
+#                      false keeps your modified copies of files that differ
+#                      from the module defaults and only installs new ones.
+#
+# Unknown keys are ignored; invalid values fall back to the default with a
+# warning. A flash with no /data/adb/ReSuSFS (or nothing in it besides this
+# file) is a fresh install: every module config is copied, no keys consulted.
+
+CONFIGURE=false
+OVERWRITE_CHANGED=true
+
+normalize_bool() {
+	case "$1" in
+		true | 1 | yes | TRUE | YES) echo true ;;
+		false | 0 | no | FALSE | NO) echo false ;;
+		*) echo "" ;;
+	esac
 }
-
-CONFIGURE=true
-if [ -d "$PERSISTENT_DIR" ]; then
-	ui_print "[*] Will select NO in 6s if no volume buttons pressed"
-	ui_print "[*] Do you want to update the configs?"
-	ui_print "[*] VOLUME UP for NO, DOWN for YES"
-	if detect_key_press; then
-		CONFIGURE=false
-	fi
-
-	if $CONFIGURE; then
-		ui_print "[*] Have you backed up your configuration?"
-		ui_print "[*] VOLUME UP for YES, DOWN for NO"
-		if ! detect_key_press; then
-			ui_print "[!] Please back up your configuration first"
-			exit 1
-		fi
-	fi
-fi
 
 CONFIG_DIR="$MODPATH/configs"
 
 [ ! -d "$CONFIG_DIR" ] || [ -z "$(ls -A "$CONFIG_DIR" 2>/dev/null)" ] && ui_print "[!] No config files found" && exit 0
+
+if [ -d "$PERSISTENT_DIR" ]; then
+	existing=$(ls -A "$PERSISTENT_DIR" 2>/dev/null | grep -v '^cli\.conf$' | head -n1)
+	if [ -n "$existing" ]; then
+		CLI_CONF="$PERSISTENT_DIR/cli.conf"
+		if [ -f "$CLI_CONF" ]; then
+			. "$CLI_CONF"
+		fi
+		val=$(normalize_bool "${update_configs:-}")
+		if [ -n "$val" ]; then
+			CONFIGURE=$val
+		elif [ -n "${update_configs:-}" ]; then
+			ui_print "[!] cli.conf: invalid update_configs='$update_configs', using false"
+		fi
+		val=$(normalize_bool "${overwrite_changed:-}")
+		if [ -n "$val" ]; then
+			OVERWRITE_CHANGED=$val
+		elif [ -n "${overwrite_changed:-}" ]; then
+			ui_print "[!] cli.conf: invalid overwrite_changed='$overwrite_changed', using true"
+		fi
+		if $CONFIGURE; then
+			ui_print "[*] update_configs=true: applying module default configs"
+			! $OVERWRITE_CHANGED && ui_print "[*] overwrite_changed=false: keeping your changed files"
+		else
+			ui_print "[*] update_configs=false: keeping existing configs"
+		fi
+	fi
+fi
 
 handle_files() {
 	src_dir="$1"
@@ -65,24 +91,20 @@ handle_files() {
 			cp "$src" "$dst"
 			ui_print "[+] $file copied"
 		elif ! cmp -s "$src" "$dst"; then
-			DIFFERENT="$DIFFERENT $file"
+			if $OVERWRITE_CHANGED; then
+				mkdir -p "$dst_dir/$(dirname "$file")"
+				cp "$src" "$dst"
+				ui_print "[+] $file $action"
+			else
+				DIFFERENT="$DIFFERENT $file"
+			fi
 		fi
 	done
 	if [ -n "$DIFFERENT" ]; then
-		ui_print "[*] Changed files:"
+		ui_print "[*] Kept changed files (set overwrite_changed=true to replace):"
 		for file in $DIFFERENT; do
 			ui_print "    - $file"
 		done
-		ui_print "[*] VOLUME UP to $action, DOWN to keep"
-		if detect_key_press; then
-			for file in $DIFFERENT; do
-				mkdir -p "$dst_dir/$(dirname "$file")"
-				cp "$src_dir/$file" "$dst_dir/$file"
-				ui_print "[+] $file $action"
-			done
-		else
-			ui_print "[+] Kept existing files"
-		fi
 	fi
 }
 

@@ -62,8 +62,30 @@ Root hiding made simple, powerful when you need it. A [KernelSU](https://kernels
 
 When updating, ReSuSFS asks before touching your existing configs, and only asks for a backup if configs exist.
 
+On the **cli** branch of this fork, the volume-key prompts are replaced by a config file so installs can run unattended (adb / fleet tooling) — see [Non-interactive installs (cli branch)](#non-interactive-installs-cli-branch) below.
+
 > [!Note]
 > v26.10.16 removed `hidden_api_policy` so ReSuSFS no longer enables hidden API access. If you edited your configuration before, review it after updating.
+
+## Non-interactive installs (cli branch)
+
+On update, this branch's installer reads `/data/adb/ReSuSFS/cli.conf` instead of prompting over volume keys:
+
+| Key | Values | What it does |
+|---|---|---|
+| `update_configs` | `true` / `false` (default `false`) | Apply the module's default configs on update — the automated equivalent of the upstream "Do you want to update the configs?" prompt. Setting `true` is the confirmation for replacing your config files; back up `/data/adb/ReSuSFS` first (upstream asks for a backup confirmation; here the explicit `true` is that confirmation). |
+| `overwrite_changed` | `true` / `false` (default `true`) | With `update_configs=true`: `false` keeps your modified copies of files that differ from the module defaults and only installs new ones. |
+
+Example `cli.conf`:
+
+```sh
+update_configs=true
+overwrite_changed=false
+```
+
+- A flash with no `/data/adb/ReSuSFS` (or nothing in it besides `cli.conf`) is a fresh install: every module config is copied, no keys consulted.
+- Unknown keys are ignored; invalid values fall back to the default with a warning.
+- To automate an update, push the file first: `adb push cli.conf /data/adb/ReSuSFS/cli.conf`, then flash.
 
 ## Config files
 
